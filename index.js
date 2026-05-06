@@ -2,7 +2,8 @@ require('dotenv').config();
 const { 
   Client, GatewayIntentBits, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  ModalBuilder, TextInputBuilder, TextInputStyle
+  ModalBuilder, TextInputBuilder, TextInputStyle,
+  SlashCommandBuilder, REST, Routes
 } = require('discord.js');
 const { google } = require('googleapis');
 
@@ -15,7 +16,7 @@ const client = new Client({
   ]
 });
 
-const PREFIX = '/';
+const GUILD_ID = '1472199797287944384';
 const REQUIRED_ROLE = 'Отдел Кадрового Обеспечение';
 
 const RANKS = [
@@ -56,7 +57,7 @@ async function findRowByDiscordId(sheets, discordId) {
   });
   const rows = res.data.values || [];
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i][2] === discordId) return i + 1;
+    if (String(rows[i][2]).replace(/^'/, '') === String(discordId)) return i + 1;
   }
   return null;
 }
@@ -65,8 +66,8 @@ async function appendHireRow(sheets, id, username, discordId, date, hiredBy) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range: `${SHEET_TAB}!A:G`,
-    valueInputOption: 'RAW',
-    requestBody: { values: [[id, username, discordId, date, hiredBy, 'Нанят', RANKS[0]]] },
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[id, username, "'" + discordId, date, hiredBy, 'Нанят', RANKS[0]]] },
   });
 }
 
@@ -74,7 +75,7 @@ async function updateStatus(sheets, rowNumber, status) {
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
     range: `${SHEET_TAB}!F${rowNumber}`,
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[status]] },
   });
 }
@@ -83,7 +84,7 @@ async function updateRank(sheets, rowNumber, rank) {
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
     range: `${SHEET_TAB}!G${rowNumber}`,
-    valueInputOption: 'RAW',
+    valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[rank]] },
   });
 }
@@ -134,11 +135,68 @@ async function refreshPanel(logChannel) {
   await logChannel.send({ embeds: [panelEmbed], components: [panelRow] });
 }
 
-client.once('ready', () => {
+const slashCommands = [
+  new SlashCommandBuilder()
+    .setName('hire')
+    .setDescription('Принять сотрудника в семью')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true))
+    .addStringOption(o => o.setName('id').setDescription('6-значный ID (123456 или 123-456)').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('verify')
+    .setDescription('Повысить сотрудника на один ранг')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('unverify')
+    .setDescription('Понизить сотрудника на один ранг')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('fire')
+    .setDescription('Уволить сотрудника')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true))
+    .addStringOption(o => o.setName('reason').setDescription('Причина увольнения').setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('rebuke')
+    .setDescription('Выдать выговор сотруднику')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true))
+    .addStringOption(o => o.setName('reason').setDescription('Причина выговора').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('unrebuke')
+    .setDescription('Снять выговор с сотрудника')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('rebukes')
+    .setDescription('История выговоров сотрудника')
+    .addUserOption(o => o.setName('user').setDescription('Пользователь').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('заявки')
+    .setDescription('Обновить панель заявок'),
+].map(c => c.toJSON());
+
+client.once('ready', async () => {
   console.log(`✅ Бот запущен как ${client.user.tag}`);
+  const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
+  try {
+    // Guild registration = instant
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+      { body: slashCommands }
+    );
+    console.log('✅ Slash команды зарегистрированы (мгновенно)');
+  } catch (e) {
+    console.error('❌ Ошибка регистрации команд:', e);
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
+
+  // Button
   if (interaction.isButton()) {
     if (interaction.customId !== 'app_cadet') return;
     const now = Date.now();
@@ -151,98 +209,75 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.showModal(buildCadetModal());
   }
 
+  // Modal
   if (interaction.isModalSubmit()) {
     if (interaction.customId !== 'modal_cadet') return;
     const { fields, user, guild } = interaction;
-    const firstName = fields.getTextInputValue('firstName');
-    const lastName  = fields.getTextInputValue('lastName');
-    const staticId  = fields.getTextInputValue('staticId');
-    const reason    = fields.getTextInputValue('reason');
-
     const embed = new EmbedBuilder()
       .setTitle('🟢 Курсант')
       .setColor(0x57f287)
       .addFields(
-        { name: 'Имя',       value: firstName, inline: true },
-        { name: 'Фамилия',   value: lastName,  inline: true },
-        { name: 'Статик ID', value: staticId,  inline: true },
-        { name: 'Причина',   value: reason },
+        { name: 'Имя',       value: fields.getTextInputValue('firstName'), inline: true },
+        { name: 'Фамилия',   value: fields.getTextInputValue('lastName'),  inline: true },
+        { name: 'Статик ID', value: fields.getTextInputValue('staticId'),  inline: true },
+        { name: 'Причина',   value: fields.getTextInputValue('reason') },
         { name: 'Статус',    value: '⏳ Ожидает рассмотрения' },
       )
       .setFooter({ text: user.tag, iconURL: user.displayAvatarURL() })
       .setTimestamp();
-
     const logChannel = guild.channels.cache.find(c => c.name === APP_LOG_CHANNEL);
-    if (logChannel) {
-      await logChannel.send({ embeds: [embed] });
-      await refreshPanel(logChannel);
-    }
+    if (logChannel) { await logChannel.send({ embeds: [embed] }); await refreshPanel(logChannel); }
     return interaction.reply({ content: '✅ Заявка отправлена! Ожидайте решения.', flags: 64 });
   }
-});
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (!message.content.startsWith(PREFIX)) return;
+  if (!interaction.isChatInputCommand()) return;
 
-  const args = message.content.slice(PREFIX.length).trim().split(/ +/);
-  const command = args.shift().toLowerCase();
+  const { commandName, guild, member } = interaction;
 
-  // ?заявки — refresh application panel
-  if (command === 'заявки') {
-    const hasPermission = message.member.roles.cache.some(r => r.name === REQUIRED_ROLE);
-    if (!hasPermission) return message.reply('❌ У тебя нет прав для использования этой команды.');
-    const logChannel = message.guild.channels.cache.find(c => c.name === APP_LOG_CHANNEL);
-    if (logChannel) await refreshPanel(logChannel);
-    await message.delete().catch(() => {});
-    return;
+  const hasPermission = member.roles.cache.some(r => r.name === REQUIRED_ROLE);
+  if (!hasPermission) {
+    return interaction.reply({ content: '❌ У тебя нет прав для использования этой команды.', flags: 64 });
   }
 
-  const validCommands = ['hire', 'verify', 'unverify', 'fire', 'rebuke', 'unrebuke', 'rebukes'];
-  if (!validCommands.includes(command)) return;
-
-  const hasPermission = message.member.roles.cache.some(r => r.name === REQUIRED_ROLE);
-  if (!hasPermission) return message.reply('❌ У тебя нет прав для использования этой команды.');
-
-  const guild = message.guild;
   const getRole = (name) => guild.roles.cache.find(r => r.name === name);
   const getChannel = (name) => guild.channels.cache.find(c => c.name === name);
 
-  // All commands need a mention — get it once here
-  const target = message.mentions.members.first();
+  await interaction.deferReply();
 
-  // ?rebukes — only needs mention, no extra args
-  if (command === 'rebukes') {
-    if (!target) return message.reply('❌ Укажи пользователя. Пример: `?rebukes @user`');
+  // /заявки
+  if (commandName === 'заявки') {
+    const logChannel = guild.channels.cache.find(c => c.name === APP_LOG_CHANNEL);
+    if (logChannel) await refreshPanel(logChannel);
+    return interaction.editReply('✅ Панель обновлена.');
+  }
+
+  // /rebukes
+  if (commandName === 'rebukes') {
+    const target = interaction.options.getMember('user');
     const history = rebukeHistory[target.id] || [];
-    if (history.length === 0) return message.reply(`📋 У ${target} нет выговоров.`);
-    const historyEmbed = new EmbedBuilder()
+    if (history.length === 0) return interaction.editReply(`📋 У ${target} нет выговоров.`);
+    const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle(`📋 История выговоров — ${target.user.username}`)
       .setDescription(`Активных выговоров: **${history.length}/3**`)
       .setThumbnail(target.user.displayAvatarURL())
       .setTimestamp()
       .setFooter({ text: guild.name, iconURL: guild.iconURL() });
-    history.forEach((entry, index) => {
-      historyEmbed.addFields({
-        name: `Выговор #${index + 1} — ${entry.date}`,
-        value: `📝 Причина: ${entry.reason}\n🛡️ Выдал: ${entry.issuedBy}`,
-      });
-    });
-    return message.reply({ embeds: [historyEmbed] });
+    history.forEach((e, i) => embed.addFields({ name: `Выговор #${i + 1} — ${e.date}`, value: `📝 ${e.reason}\n🛡️ ${e.issuedBy}` }));
+    return interaction.editReply({ embeds: [embed] });
   }
 
-  // ?rebuke @user reason
-  if (command === 'rebuke') {
-    if (!target) return message.reply('❌ Укажи пользователя. Пример: `?rebuke @user причина`');
+  // /rebuke
+  if (commandName === 'rebuke') {
+    const target = interaction.options.getMember('user');
     if (target.roles.cache.some(r => r.name === 'Авторитет[8]'))
-      return message.reply('❌ Нельзя выдать выговор **Авторитету[8]**.');
+      return interaction.editReply('❌ Нельзя выдать выговор **Авторитету[8]**.');
 
-    const reason = args.slice(1).join(' ') || 'Причина не указана';
+    const reason = interaction.options.getString('reason') || 'Причина не указана';
     const dateStr = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
 
     if (!rebukeHistory[target.id]) rebukeHistory[target.id] = [];
-    rebukeHistory[target.id].push({ reason, issuedBy: message.author.tag, date: dateStr });
+    rebukeHistory[target.id].push({ reason, issuedBy: interaction.user.tag, date: dateStr });
 
     const count = rebukeHistory[target.id].length;
     let actionText = 'Без действий';
@@ -294,7 +329,7 @@ client.on('messageCreate', async (message) => {
       .setThumbnail(target.user.displayAvatarURL())
       .addFields(
         { name: '👤 Сотрудник', value: `${target}`, inline: true },
-        { name: '🛡️ Выдал', value: `${message.author}`, inline: true },
+        { name: '🛡️ Выдал', value: `${interaction.user}`, inline: true },
         { name: '📝 Причина', value: reason },
         { name: '📊 Выговоров', value: `**${count >= 3 ? '3 (сброшено)' : count}/3**`, inline: true },
         { name: '⚡ Действие', value: actionText, inline: true },
@@ -306,14 +341,14 @@ client.on('messageCreate', async (message) => {
     await target.send({ embeds: [rebukeEmbed] }).catch(() => {});
     const logChannel = getChannel(REBUKE_LOG_CHANNEL);
     if (logChannel) await logChannel.send({ embeds: [rebukeEmbed] });
-    return message.reply(`⚠️ Выговор выдан ${target}. Причина: **${reason}**. Выговоров: **${count >= 3 ? '3 → сброшено' : count}/3**.`);
+    return interaction.editReply(`⚠️ Выговор выдан ${target}. Причина: **${reason}**. Выговоров: **${count >= 3 ? '3 → сброшено' : count}/3**.`);
   }
 
-  // ?unrebuke @user
-  if (command === 'unrebuke') {
-    if (!target) return message.reply('❌ Укажи пользователя. Пример: `?unrebuke @user`');
+  // /unrebuke
+  if (commandName === 'unrebuke') {
+    const target = interaction.options.getMember('user');
     const history = rebukeHistory[target.id] || [];
-    if (history.length === 0) return message.reply(`ℹ️ У ${target} нет выговоров.`);
+    if (history.length === 0) return interaction.editReply(`ℹ️ У ${target} нет выговоров.`);
     const removed = rebukeHistory[target.id].pop();
     const newCount = rebukeHistory[target.id].length;
     const unrebukeEmbed = new EmbedBuilder()
@@ -322,7 +357,7 @@ client.on('messageCreate', async (message) => {
       .setThumbnail(target.user.displayAvatarURL())
       .addFields(
         { name: '👤 Сотрудник', value: `${target}`, inline: true },
-        { name: '🛡️ Снял', value: `${message.author}`, inline: true },
+        { name: '🛡️ Снял', value: `${interaction.user}`, inline: true },
         { name: '📝 Снятый выговор', value: removed.reason },
         { name: '📊 Осталось выговоров', value: `**${newCount}/3**`, inline: true },
       )
@@ -331,29 +366,19 @@ client.on('messageCreate', async (message) => {
     await target.send({ embeds: [unrebukeEmbed] }).catch(() => {});
     const logChannel = getChannel(UNREBUKE_LOG_CHANNEL);
     if (logChannel) await logChannel.send({ embeds: [unrebukeEmbed] });
-    return message.reply(`✅ С ${target} снят один выговор. Осталось: **${newCount}/3**.`);
+    return interaction.editReply(`✅ С ${target} снят один выговор. Осталось: **${newCount}/3**.`);
   }
 
-  // All rank commands need a target
-  if (!target) return message.reply('❌ Укажи пользователя.');
-
-  const isAvtoritet = () => target.roles.cache.some(r => r.name === 'Авторитет[8]');
-  const getCurrentRank = () => {
-    for (let i = RANKS.length - 1; i >= 0; i--)
-      if (target.roles.cache.some(r => r.name === RANKS[i])) return i;
-    return -1;
-  };
-
-  // ?hire @user ID
-  if (command === 'hire') {
-    const rawId = args[1];
-    if (!rawId) return message.reply('❌ Укажи ID. Пример: `?hire @user 123456` или `?hire @user 123-456`');
+  // /hire
+  if (commandName === 'hire') {
+    const target = interaction.options.getMember('user');
+    const rawId = interaction.options.getString('id');
     const idClean = rawId.replace('-', '');
-    if (!/^\d{6}$/.test(idClean)) return message.reply('❌ Неверный формат ID. Используй 6 цифр: `123456` или `123-456`');
+    if (!/^\d{6}$/.test(idClean)) return interaction.editReply('❌ Неверный формат ID. Используй 6 цифр: `123456` или `123-456`');
     const normalizedId = rawId.includes('-') ? rawId : `${rawId.slice(0, 3)}-${rawId.slice(3)}`;
 
     const role = getRole(RANKS[0]);
-    if (!role) return message.reply(`❌ Роль \`${RANKS[0]}\` не найдена на сервере.`);
+    if (!role) return interaction.editReply(`❌ Роль \`${RANKS[0]}\` не найдена на сервере.`);
     const firedRole = getRole(FIRED_ROLE);
     if (firedRole && target.roles.cache.has(firedRole.id)) await target.roles.remove(firedRole).catch(() => {});
     await target.roles.add(role);
@@ -365,20 +390,24 @@ client.on('messageCreate', async (message) => {
     const dateStr = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
     try {
       const sheets = await getSheets();
-      await appendHireRow(sheets, normalizedId, target.user.username, target.id, dateStr, message.author.tag);
+      await appendHireRow(sheets, normalizedId, target.user.username, target.id, dateStr, interaction.user.tag);
     } catch (e) { console.error('Sheets error:', e.message); }
 
-    return message.reply(`✅ ${target} принят в семью. ID: **${normalizedId}**. Звание: **${RANKS[0]}**.`);
+    return interaction.editReply(`✅ ${target} принят в семью. ID: **${normalizedId}**. Звание: **${RANKS[0]}**.`);
   }
 
-  // ?verify
-  if (command === 'verify') {
-    const currentIndex = getCurrentRank();
-    if (currentIndex === -1) return message.reply(`⚠️ У ${target} нет звания. Сначала используй \`?hire\`.`);
-    if (currentIndex === RANKS.length - 1) return message.reply(`⚠️ ${target} достиг максимального звания. Авторитет выдаётся только вручную.`);
+  // /verify
+  if (commandName === 'verify') {
+    const target = interaction.options.getMember('user');
+    let currentIndex = -1;
+    for (let i = RANKS.length - 1; i >= 0; i--) {
+      if (target.roles.cache.some(r => r.name === RANKS[i])) { currentIndex = i; break; }
+    }
+    if (currentIndex === -1) return interaction.editReply(`⚠️ У ${target} нет звания. Сначала используй \`/hire\`.`);
+    if (currentIndex === RANKS.length - 1) return interaction.editReply(`⚠️ ${target} на максимальном звании. Авторитет выдаётся только вручную.`);
     const oldRole = getRole(RANKS[currentIndex]);
     const newRole = getRole(RANKS[currentIndex + 1]);
-    if (!newRole) return message.reply(`❌ Роль \`${RANKS[currentIndex + 1]}\` не найдена.`);
+    if (!newRole) return interaction.editReply(`❌ Роль \`${RANKS[currentIndex + 1]}\` не найдена.`);
     await target.roles.remove(oldRole).catch(() => {});
     await target.roles.add(newRole);
     try {
@@ -386,18 +415,23 @@ client.on('messageCreate', async (message) => {
       const rowNum = await findRowByDiscordId(sheets, target.id);
       if (rowNum) await updateRank(sheets, rowNum, RANKS[currentIndex + 1]);
     } catch (e) { console.error('Sheets error:', e.message); }
-    return message.reply(`⬆️ ${target} повышен до **${RANKS[currentIndex + 1]}**.`);
+    return interaction.editReply(`⬆️ ${target} повышен до **${RANKS[currentIndex + 1]}**.`);
   }
 
-  // ?unverify
-  if (command === 'unverify') {
-    if (isAvtoritet()) return message.reply(`❌ Нельзя понизить **Авторитет[8]** через команду.`);
-    const currentIndex = getCurrentRank();
-    if (currentIndex === -1) return message.reply(`⚠️ У ${target} нет звания для понижения.`);
-    if (currentIndex === 0) return message.reply(`⚠️ ${target} уже на низшем звании. Используй \`?fire\`.`);
+  // /unverify
+  if (commandName === 'unverify') {
+    const target = interaction.options.getMember('user');
+    if (target.roles.cache.some(r => r.name === 'Авторитет[8]'))
+      return interaction.editReply(`❌ Нельзя понизить **Авторитет[8]** через команду.`);
+    let currentIndex = -1;
+    for (let i = RANKS.length - 1; i >= 0; i--) {
+      if (target.roles.cache.some(r => r.name === RANKS[i])) { currentIndex = i; break; }
+    }
+    if (currentIndex === -1) return interaction.editReply(`⚠️ У ${target} нет звания для понижения.`);
+    if (currentIndex === 0) return interaction.editReply(`⚠️ ${target} уже на низшем звании. Используй \`/fire\`.`);
     const oldRole = getRole(RANKS[currentIndex]);
     const newRole = getRole(RANKS[currentIndex - 1]);
-    if (!newRole) return message.reply(`❌ Роль \`${RANKS[currentIndex - 1]}\` не найдена.`);
+    if (!newRole) return interaction.editReply(`❌ Роль \`${RANKS[currentIndex - 1]}\` не найдена.`);
     await target.roles.remove(oldRole).catch(() => {});
     await target.roles.add(newRole);
     try {
@@ -405,19 +439,21 @@ client.on('messageCreate', async (message) => {
       const rowNum = await findRowByDiscordId(sheets, target.id);
       if (rowNum) await updateRank(sheets, rowNum, RANKS[currentIndex - 1]);
     } catch (e) { console.error('Sheets error:', e.message); }
-    return message.reply(`⬇️ ${target} понижен до **${RANKS[currentIndex - 1]}**.`);
+    return interaction.editReply(`⬇️ ${target} понижен до **${RANKS[currentIndex - 1]}**.`);
   }
 
-  // ?fire @user reason
-  if (command === 'fire') {
-    if (isAvtoritet()) return message.reply(`❌ Нельзя уволить **Авторитет[8]** через команду.`);
-    const reason = args.slice(1).join(' ') || 'Причина не указана';
+  // /fire
+  if (commandName === 'fire') {
+    const target = interaction.options.getMember('user');
+    if (target.roles.cache.some(r => r.name === 'Авторитет[8]'))
+      return interaction.editReply(`❌ Нельзя уволить **Авторитет[8]** через команду.`);
+    const reason = interaction.options.getString('reason') || 'Причина не указана';
     for (const rankName of RANKS) {
       const role = getRole(rankName);
       if (role && target.roles.cache.has(role.id)) await target.roles.remove(role).catch(() => {});
     }
     const firedRole = getRole(FIRED_ROLE);
-    if (!firedRole) return message.reply(`❌ Роль \`${FIRED_ROLE}\` не найдена.`);
+    if (!firedRole) return interaction.editReply(`❌ Роль \`${FIRED_ROLE}\` не найдена.`);
     await target.roles.add(firedRole);
     const sostav = getRole('Состав ЧОП Лозанук');
     if (sostav) await target.roles.remove(sostav).catch(() => {});
@@ -429,7 +465,7 @@ client.on('messageCreate', async (message) => {
       if (rowNum) { await updateStatus(sheets, rowNum, 'Уволен'); await updateRank(sheets, rowNum, '-'); }
     } catch (e) { console.error('Sheets error:', e.message); }
     await target.send(`🔴 Вы были уволены из семьи.\n📝 Причина: ${reason}`).catch(() => {});
-    return message.reply(`🔴 ${target} был уволен из семьи. Причина: **${reason}**.`);
+    return interaction.editReply(`🔴 ${target} был уволен из семьи. Причина: **${reason}**.`);
   }
 });
 
