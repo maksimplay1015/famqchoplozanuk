@@ -255,7 +255,7 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'rebukes') {
     const target = interaction.options.getMember('user');
     const history = rebukeHistory[target.id] || [];
-    if (history.length === 0) return interaction.editReply(`📋 У ${target} нет выговоров.`);
+    if (history.length === 0) return interaction.editReply(`📋 У ${target} нет истории выговоров.`);
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle(`📋 История выговоров — ${target.user.username}`)
@@ -279,7 +279,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!rebukeHistory[target.id]) rebukeHistory[target.id] = [];
     rebukeHistory[target.id].push({ reason, issuedBy: interaction.user.tag, date: dateStr });
 
-    const count = rebukeHistory[target.id].length;
+    const count = rebukeHistory[target.id].filter(e => !e.fired && !e.removed).length;
     let actionText = 'Без действий';
     let embedColor = 0xFFA500;
 
@@ -348,12 +348,13 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'unrebuke') {
     const target = interaction.options.getMember('user');
     const history = rebukeHistory[target.id] || [];
-    const activeRebukes = history.filter(e => !e.fired);
+    const activeRebukes = history.filter(e => !e.fired && !e.removed);
     if (activeRebukes.length === 0) return interaction.editReply(`ℹ️ У ${target} нет активных выговоров.`);
-    // Remove the last active rebuke
-    const lastActiveIdx = history.map(e => !e.fired).lastIndexOf(true);
-    const removed = rebukeHistory[target.id].splice(lastActiveIdx, 1)[0];
-    const newCount = rebukeHistory[target.id].filter(e => !e.fired).length;
+    // Mark last active rebuke as removed instead of deleting it
+    const lastActiveIdx = rebukeHistory[target.id].reduce((acc, e, i) => (!e.fired && !e.removed ? i : acc), -1);
+    const removed = rebukeHistory[target.id][lastActiveIdx];
+    rebukeHistory[target.id][lastActiveIdx] = { ...removed, removed: true, removedBy: interaction.user.tag, removedDate: new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' }) };
+    const newCount = rebukeHistory[target.id].filter(e => !e.fired && !e.removed).length;
     const unrebukeEmbed = new EmbedBuilder()
       .setColor(0x00C853)
       .setTitle('✅ Выговор снят')
