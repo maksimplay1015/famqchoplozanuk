@@ -313,7 +313,7 @@ client.on('interactionCreate', async (interaction) => {
       }
       const firedRole = getRole(FIRED_ROLE);
       if (firedRole) await target.roles.add(firedRole).catch(() => {});
-      rebukeHistory[target.id] = [];
+      rebukeHistory[target.id] = rebukeHistory[target.id].map(e => ({ ...e, fired: true }));
       actionText = '🔴 Уволен из семьи';
       try {
         const sheets = await getSheets();
@@ -348,9 +348,12 @@ client.on('interactionCreate', async (interaction) => {
   if (commandName === 'unrebuke') {
     const target = interaction.options.getMember('user');
     const history = rebukeHistory[target.id] || [];
-    if (history.length === 0) return interaction.editReply(`ℹ️ У ${target} нет выговоров.`);
-    const removed = rebukeHistory[target.id].pop();
-    const newCount = rebukeHistory[target.id].length;
+    const activeRebukes = history.filter(e => !e.fired);
+    if (activeRebukes.length === 0) return interaction.editReply(`ℹ️ У ${target} нет активных выговоров.`);
+    // Remove the last active rebuke
+    const lastActiveIdx = history.map(e => !e.fired).lastIndexOf(true);
+    const removed = rebukeHistory[target.id].splice(lastActiveIdx, 1)[0];
+    const newCount = rebukeHistory[target.id].filter(e => !e.fired).length;
     const unrebukeEmbed = new EmbedBuilder()
       .setColor(0x00C853)
       .setTitle('✅ Выговор снят')
