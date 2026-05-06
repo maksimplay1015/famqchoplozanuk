@@ -256,14 +256,24 @@ client.on('interactionCreate', async (interaction) => {
     const target = interaction.options.getMember('user');
     const history = rebukeHistory[target.id] || [];
     if (history.length === 0) return interaction.editReply(`📋 У ${target} нет истории выговоров.`);
+    const activeCount = history.filter(e => !e.fired && !e.removed).length;
+    const isFired = history.some(e => e.fired);
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle(`📋 История выговоров — ${target.user.username}`)
-      .setDescription(`Активных выговоров: **${history.length}/3**`)
+      .setDescription(isFired
+        ? `Активных выговоров: **${activeCount}/3**\n🔴 **Уволен** — история сохранена`
+        : `Активных выговоров: **${activeCount}/3**`)
       .setThumbnail(target.user.displayAvatarURL())
       .setTimestamp()
       .setFooter({ text: guild.name, iconURL: guild.iconURL() });
-    history.forEach((e, i) => embed.addFields({ name: `Выговор #${i + 1} — ${e.date}`, value: `📝 ${e.reason}\n🛡️ ${e.issuedBy}` }));
+    history.forEach((e, i) => {
+      let label, note;
+      if (e.fired) { label = '🗂️ Архив'; note = '\n🔴 Выдан до увольнения'; }
+      else if (e.removed) { label = '✅ Снят'; note = `\n✅ Снял: ${e.removedBy} — ${e.removedDate}`; }
+      else { label = '⚠️ Активен'; note = ''; }
+      embed.addFields({ name: `${label} | Выговор #${i + 1} — ${e.date}`, value: `📝 ${e.reason}\n🛡️ Выдал: ${e.issuedBy}${note}` });
+    });
     return interaction.editReply({ embeds: [embed] });
   }
 
