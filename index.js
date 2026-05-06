@@ -15,7 +15,7 @@ const client = new Client({
   ]
 });
 
-const PREFIX = '?';
+const PREFIX = '/';
 const REQUIRED_ROLE = 'Отдел Кадрового Обеспечение';
 
 const RANKS = [
